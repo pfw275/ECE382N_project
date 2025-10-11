@@ -52,6 +52,8 @@ static inline void busy_wait_until(uint64_t until) {
 }
 
 void simple_side_channel_sender(uint64_t start_tsc, size_t msg_len, uint8_t *pages) {
+	// TODO NEED TO REFORMAT SO IT IS MORE STRUCTURED LIKE SQUARE MULT, IN THAT HAVE SECRET DEPENDENT MEMORY ACCESSES
+	// IE IF SECRET THEN ACCESS SOMETHING. ELSE ACCESS OTHER
 	// Function pulled from the professor, for initial validation of attack
     uint64_t next_transmission = start_tsc + EPOCH_LENGTH / 3;
     for (size_t i = 0; i < msg_len; i++) {
