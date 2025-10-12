@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <x86intrin.h>
+#include <stdbool.h>
 
 #define PAGE_SIZE 4096
 #define CACHE_LINE_SIZE 64
@@ -48,7 +49,7 @@ uint64_t mul(uint64_t r, uint64_t b){
 // TODO CONFIRM THAT THIS IMPLEMENTATION OF SQUARE MULT WORKS
 uint64_t square_multiply(uint64_t b, uint64_t m, uint64_t e, int n) {
 	uint64_t r = 1; 
-	for (int i = n - 1; i > 0 ; i --){
+	for (int i = n - 1; i >= 0 ; i --){
 		r = sqr(r);
 		r = mod(r, m);
 		if (e % 2 != 0){
@@ -63,16 +64,11 @@ uint64_t square_multiply(uint64_t b, uint64_t m, uint64_t e, int n) {
 
 // helper function for printing the results
 void print_bin(uint64_t val){
-	uint64_t print_mask = 1 << sizeof(uint64_t) * CHAR_BIT - 1;
-	while (print_mask){
-		bool print_val = 0;
-		if (print_mask & val){
-			print_val = 1;
-		}
-		printf("%d", print_val);
-		print_mask >>= 1;
+	int num_bits = sizeof(uint64_t) * 8;
+	for (int i = num_bits; i >= 0; i--){
+		printf("%llu", (val >> i) & 1);
 	}
-	printf("\n")''
+	printf("\n");
 }
 
 
@@ -86,6 +82,8 @@ static inline void busy_wait_until(uint64_t until) {
 
 uint64_t calibrate_latency(){
 	// TODO IMPLEMENT CALIBRATING LATENCY
+	uint64_t foo = 0;
+	return foo;
 }
 
 
@@ -95,11 +93,11 @@ void generate_ev(uint8_t **EVtd, uint8_t **EVl2_mul, uint8_t *page_mul){
 	// TODO BE VERY CAREFUL ABOUT MEMORY HANDLING
 }
 
-void simple_side_channel_sender(uint64_t start_tsc, uint msg_len, uint8_t *page_sqr, uint8_t *page_mul, uint64_t e) {
+void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *page_sqr, uint8_t *page_mul, uint64_t e) {
 	// Function pulled from the professor, for initial validation of attack
     uint64_t next_transmission = start_tsc + EPOCH_LENGTH / 3;
     bool transmit_value;
-    for (uint i = 0; i < msg_len; i++) {
+    for (uint64_t i = 0; i < msg_len; i++) {
         busy_wait_until(next_transmission);
         next_transmission += EPOCH_LENGTH;
 
@@ -119,7 +117,7 @@ void simple_side_channel_sender(uint64_t start_tsc, uint msg_len, uint8_t *page_
     }
 }
 
-void attack_helper(uint64_t start_tsc, uint msg_len, uint8_t **EVtd){
+void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 
 	// stop the helper after a certain number of epochs
@@ -127,12 +125,12 @@ void attack_helper(uint64_t start_tsc, uint msg_len, uint8_t **EVtd){
 	while (_rdtsc() < end_tsc){
 		for (int i = 0; i < WTD; i++){
 			// repeatedly access pages in the eviction set for the directory
-			_maccess(EVtd[i])
+			_maccess(EVtd[i]);
 		}
 	}
 }
 
-void attacker_side_channel(uint64_t start_tsc, uint msg_len, uint8_t **EVl2_mul, uint64_t threshold, uint8_t *page_mul){
+void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint64_t threshold, uint8_t *page_mul){
 
 	// setup handling incoming data
 	uint64_t recv_int = 0;
@@ -143,7 +141,7 @@ void attacker_side_channel(uint64_t start_tsc, uint msg_len, uint8_t **EVl2_mul,
 	uint64_t next_reload = start_tsc + 2 * EPOCH_LENGTH / 3;
 
 	//main receiver loop
-	for (uint i = 0; uint i < msg_len; i++){
+	for (uint64_t i = 0; i < msg_len; i++){
 		// evict
 		busy_wait_until(next_evict);
 		next_evict += EPOCH_LENGTH;
@@ -189,8 +187,8 @@ void attacker_side_channel(uint64_t start_tsc, uint msg_len, uint8_t **EVl2_mul,
 int main(){
 	int ret = 0;
 	// make the memory regions take up multiple pages, so they should not co locate
-	uint8_t *page_sqr = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT+READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	uint8_t *page_mul = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT+READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	uint8_t *page_sqr = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	uint8_t *page_mul = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
 	// allcoate pointers for the eviction sets
 	uint8_t **EVtd = calloc(WTD + 1, sizeof(uint8_t *));
@@ -204,7 +202,7 @@ int main(){
 
 
 	// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
-	uint msg_len = sizeof(uint64_t) * 8;
+	uint64_t msg_len = sizeof(uint64_t) * 8;
     uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH;
 	pid_t pid = fork();
 	if (pid == 0){
@@ -232,21 +230,21 @@ int main(){
 			}
 			else{
 				perror("fork");
-				ret = errorno;
+				ret = errno;
 				goto cleanup;
 			}	
 			wait(NULL); //wait for child process
 		}
 		else{
 			perror("fork");
-			ret = errorno;
+			ret = errno;
 			goto cleanup;
 		}
 		wait(NULL); //wait for child process
 	}
 	else{
 		perror("fork");
-		ret = errorno;
+		ret = errno;
 		goto cleanup;
 	}
 
