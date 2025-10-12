@@ -26,6 +26,9 @@
 // Message we want to send
 const uint64_t msg = 0x12345678910;
 
+
+// Code for the attack victim if not doing a side channel
+/*
 uint64_t sqr(uint64_t r){
 	r = r * r ;
 	return r;
@@ -42,6 +45,22 @@ uint64_t mul(uint64_t r, uint64_t b){
 }
 
 
+// TODO CONFIRM THAT THIS IMPLEMENTATION OF SQUARE MULT WORKS
+uint64_t square_multiply(uint64_t b, uint64_t m, uint64_t e, int n) {
+	uint64_t r = 1; 
+	for (int i = n - 1; i > 0 ; i --){
+		r = sqr(r);
+		r = mod(r, m);
+		if (e % 2 != 0){
+			r = mul(r, b);
+			r = mod(r, m);
+		}
+		e /= 2;
+	}
+	return r;
+*/
+
+
 // helper function for printing the results
 void print_bin(uint64_t val){
 	uint64_t print_mask = 1 << sizeof(uint64_t) * CHAR_BIT - 1;
@@ -56,21 +75,6 @@ void print_bin(uint64_t val){
 	printf("\n")''
 }
 
-// TODO CONFIRM THAT THIS IMPLEMENTATION OF SQUARE MULT WORKS
-uint64_t square_multiply(uint64_t b, uint64_t m, uint64_t e, int n) {
-	uint64_t r = 1; 
-	for (int i = n - 1; i > 0 ; i --){
-		r = sqr(r);
-		r = mod(r, m);
-		if (e % 2 != 0){
-			r = mul(r, b);
-			r = mod(r, m);
-		}
-		e /= 2;
-	}
-	return r;
-
-
 
 // Busy wait until the timestamp counter passes a certain value
 // There's no guarantee on how far we have gone passed the intended value
@@ -78,6 +82,17 @@ static inline void busy_wait_until(uint64_t until) {
     while (_rdtsc() < until) {
         __asm__ __volatile__("rep; nop" ::: "memory");
     }
+}
+
+uint64_t calibrate_latency(){
+	// TODO IMPLEMENT CALIBRATING LATENCY
+}
+
+
+void generate_ev(uint8_t **EVtd, uint8_t **EVl2_mul, uint8_t *page_mul){
+	// TODO GENERATE EVICTION SETS
+
+	// TODO BE VERY CAREFUL ABOUT MEMORY HANDLING
 }
 
 void simple_side_channel_sender(uint64_t start_tsc, uint msg_len, uint8_t *page_sqr, uint8_t *page_mul, uint64_t e) {
@@ -177,6 +192,15 @@ int main(){
 	uint8_t *page_sqr = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT+READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	uint8_t *page_mul = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT+READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
+	// allcoate pointers for the eviction sets
+	uint8_t **EVtd = calloc(WTD + 1, sizeof(uint8_t *));
+	uint8_t **EVl2_mul = calloc(WL2 + 1, sizeof(uint8_t *));
+
+	// calibrate the latency
+	uint64_t threshold = calibrate_latency();
+
+	// generate the eviction sets
+	generate_ev(EVtd, EVl2_mul, page_mul);
 
 
 	// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
@@ -229,6 +253,16 @@ int main(){
 	cleanup:
 		munmap(page_sqr, PAGE_SIZE * NUM_PAGE_PER_ALLOC);
 		munmap(page_mul, PAGE_SIZE * NUM_PAGE_PER_ALLOC);
+
+		// clean up the eviction sets, need to iterate through each
+		for (int i =0; i < WTD + 1; i++){
+			// TODO FREE EACH ITEM IN EVtd
+		}
+		for (int i =0; i < WL2 + 1; i++){
+			// TODO FREE EACH ITEM IN EVl2_mul
+		}
+		free(EVtd);
+		free(EVl2_mul);
 		return ret;
 }
 
