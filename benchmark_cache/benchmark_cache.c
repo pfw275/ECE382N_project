@@ -130,6 +130,43 @@ uint64_t calibrate_mem_latency() {
     return miss;
 }
 
+void get_access_plot(){
+    uint32_t max_N = 1000;
+    uint8_t *data = malloc(8);
+    FILE *fpt;
+
+
+    uint8_t *eviction_set = malloc(sizeof(uint8_t) * L2_SETS * L2_WAYS * CACHELINE_SIZE * (max_N + 1));
+    uint64_t *recorded_data = malloc(sizeof(uint64_t) * max_N);
+    assert(eviction_set); // Lazy "exception" handling
+
+    // Measure latency as a function of maxN
+    for (uint32_t n = 0; n < max_N; n++) {
+        _maccess(data);
+        for (uint32_t ii = 0; ii < (L2_SETS * L2_WAYS * (n + 1)); ii++) {
+            //printf("Eviction Set Addr: %p\n", (void*)&eviction_set[ii * sizeof(uint8_t) * CACHELINE_SIZE]);
+            _maccess(&eviction_set[ii * sizeof(uint8_t) * CACHELINE_SIZE]);
+        }
+        uint64_t start = _timer_start();
+        _maccess(data);
+        recorded_data[n] = _timer_end() - start;
+        //printf("Hit: %" PRIu64 "\n", hit);
+    }
+
+    fpt = fopen("benchmark_plot_data.csv", "w+");
+    for (uint32_t n = 0; n < max_N; n++) {
+        //fprintf(fpt, "")
+        fprintf(fpt, "%" PRIu32 ",%" PRIu64 "\n", n +1, recorded_data[n]);
+        printf("%" PRIu32 ",%" PRIu64 "\n", n +1, recorded_data[n]);
+    } 
+    fclose(fpt);
+
+
+    free(data);
+    free(eviction_set);
+    free(recorded_data);
+}
+
 /*
 // Measure access latency for random accesses within an array of given size
 double measure_latency(size_t array_size_bytes) {
@@ -185,6 +222,7 @@ int main() {
     l2_time = calibrate_l2_latency();
     l3_time = calibrate_l3_latency();
     mem_time = calibrate_mem_latency();
+    get_access_plot();
 
     printf("Calibration Results:\n");
     printf("L1  : %" PRIu64 ",\n", l1_time);
