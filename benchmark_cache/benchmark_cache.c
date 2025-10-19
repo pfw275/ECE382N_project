@@ -20,18 +20,41 @@
 #define CACHELINE_SIZE 64
 // Cache sizes in cache lines
 // L1 Cache Dimensions
-#define L1_SIZE 500  // same for data/instruction
-#define L1_SETS 64
+#define L1_SIZE 512*1024  // same for data/instruction
+#define L1_SETS 1024
 #define L1_WAYS 8
 // L2 Cache Dimensions
-#define L2_SIZE 16000
-#define L2_SETS 64
-#define L2_WAYS 8
+// This is size per core
+#define L2_SIZE 1 * 1024 * 1024
+#define L2_SETS 1024
+#define L2_WAYS 16
 // L3 Cache Dimensions
-#define L3_SIZE 352000
-#define L3_SETS 64
-#define L3_WAYS 8
+#define L3_SIZE 1.375 * 1024 * 1024
+#define L3_SETS 2048
+#define L3_WAYS 11
 
+
+
+// get median
+int compare(const void *a, const void *b) {
+    uint64_t val_a = *(const uint64_t *)a;
+    uint64_t val_b = *(const uint64_t *)b;
+    if (val_a < val_b){
+        return -1;
+    }
+    else if (val_a > val_b){
+        return 1;
+    }
+    return 0;
+}
+uint64_t findMedian(uint64_t* measurements, uint8_t n){
+    qsort(measurements, n, sizeof(uint64_t), compare);
+
+    if (n % 2 == 0){
+        return ((measurements[n / 2 - 1] + measurements[n/2])/2);
+    }
+    return measurements[n/2];
+}
 
 uint64_t calibrate_l1_latency() {
     printf("Calibrate L1 Cache Latency\n");
@@ -39,17 +62,23 @@ uint64_t calibrate_l1_latency() {
     uint8_t *data = malloc(8);
     assert(data); // Lazy "exception" handling
 
+    uint64_t *recorded_data = malloc(sizeof(uint64_t) * rep);
+
     // Measure l1 cache hit latency
-    _maccess(data);
     for (uint32_t n = 0; n < rep; n++) {
+        _maccess(data);
         uint64_t start = _timer_start();
         _maccess(data);
-        hit += _timer_end() - start;
+        // hit += _timer_end() - start;
+        _mm_lfence();
+        recorded_data[n] = _timer_end() - start;
         //printf("Hit: %" PRIu64 "\n", hit);
     }
-    hit /= rep;
+    // hit /= rep;
+    hit = findMedian(recorded_data, rep);
 
     free(data);
+    free(recorded_data);
     return hit;
 }
 
@@ -58,7 +87,10 @@ uint64_t calibrate_l2_latency() {
     uint64_t hit = 0, rep = 1000;
     uint8_t *data = malloc(8);
     assert(data); // Lazy "exception" handling
-    int N = 1000;
+
+    uint64_t *recorded_data = malloc(sizeof(uint64_t) * rep);
+
+    int N = 1;
     uint8_t *eviction_set = malloc(sizeof(uint8_t) * L1_SETS * L1_WAYS * CACHELINE_SIZE * N);
     assert(eviction_set); // Lazy "exception" handling
 
@@ -71,13 +103,17 @@ uint64_t calibrate_l2_latency() {
         }
         uint64_t start = _timer_start();
         _maccess(data);
-        hit += _timer_end() - start;
+        // hit += _timer_end() - start;
+        _mm_lfence();
+        recorded_data[n] = _timer_end() - start;
         //printf("Hit: %" PRIu64 "\n", hit);
     }
-    hit /= rep;
+    // hit /= rep;
+    hit = findMedian(recorded_data, rep);
 
     free(data);
     free(eviction_set);
+    free(recorded_data);
     return hit;
 }
 
@@ -86,9 +122,11 @@ uint64_t calibrate_l3_latency() {
     uint64_t hit = 0, rep = 1000;
     uint8_t *data = malloc(8);
     assert(data); // Lazy "exception" handling
-    int N = 50000;
+    int N = 4;
     uint8_t *eviction_set = malloc(sizeof(uint8_t) * L2_SETS * L2_WAYS * CACHELINE_SIZE * N);
     assert(eviction_set); // Lazy "exception" handling
+
+    uint64_t *recorded_data = malloc(sizeof(uint64_t) * rep);
 
     // Measure l1 cache hit latency
     for (uint32_t n = 0; n < rep; n++) {
@@ -99,13 +137,17 @@ uint64_t calibrate_l3_latency() {
         }
         uint64_t start = _timer_start();
         _maccess(data);
-        hit += _timer_end() - start;
+        // hit += _timer_end() - start;
+        _mm_lfence();
+        recorded_data[n] = _timer_end() - start;
         //printf("Hit: %" PRIu64 "\n", hit);
     }
-    hit /= rep;
+    hit = findMedian(recorded_data, rep);
+    // hit /= rep;
 
     free(data);
     free(eviction_set);
+    free(recorded_data);
     return hit;
 }
 
@@ -116,17 +158,22 @@ uint64_t calibrate_mem_latency() {
     uint8_t *data = malloc(8);
     assert(data); // Lazy "exception" handling
 
+    uint64_t *recorded_data = malloc(sizeof(uint64_t) * rep);
+
    // Measure memory cache latency
     for (uint32_t n = 0; n < rep; n++) {
         _mm_clflush(data);
         uint64_t start = _timer_start();
         _maccess(data);
-        miss += _timer_end() - start;
+        // miss += _timer_end() - start;
+        recorded_data[n] = _timer_end() - start;
         //printf("Hit: %" PRIu64 "\n", miss);
     }
-    miss /= rep;
+    miss = findMedian(recorded_data, rep);
+    // miss /= rep;
 
     free(data);
+    free(recorded_data);
     return miss;
 }
 
