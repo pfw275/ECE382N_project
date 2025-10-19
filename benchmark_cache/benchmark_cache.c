@@ -222,7 +222,7 @@ int main() {
     l2_time = calibrate_l2_latency();
     l3_time = calibrate_l3_latency();
     mem_time = calibrate_mem_latency();
-    get_access_plot();
+    // get_access_plot();
 
     printf("Calibration Results:\n");
     printf("L1  : %" PRIu64 ",\n", l1_time);
