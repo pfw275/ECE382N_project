@@ -71,7 +71,7 @@ uint64_t square_multiply(uint64_t b, uint64_t m, uint64_t e, int n) {
 // helper function for printing the results
 void print_bin(uint64_t val){
 	int num_bits = sizeof(uint64_t) * 8;
-	for (int i = num_bits; i >= 0; i--){
+	for (int i = num_bits - 1; i >= 0; i--){
 		printf("%lu", (val >> i) & 1);
 	}
 	printf("\n");
