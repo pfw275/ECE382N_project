@@ -1,3 +1,6 @@
+// call as below:
+// taskset -c 0,2,4,6 ./evict_reload 
+
 // #include "../inline_asm.h"
 #include <assert.h>
 #include <ctype.h>
@@ -85,7 +88,7 @@ static inline void busy_wait_until(uint64_t until) {
 
 uint64_t calibrate_latency(){
 	// TODO IMPLEMENT CALIBRATING LATENCY
-	uint64_t foo = 0;
+	uint64_t foo = 80;
 	return foo;
 }
 
@@ -115,24 +118,18 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *p
     }
 }
 
-void attack_helper(uint64_t start_tsc, uint64_t msg_len, EVSet *EVtd){
+void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
-
 	// stop the helper after a certain number of epochs
 	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1));
-	EVTestConfig *tconf = &EVtd->config->test_config;
-	size_t cnt = EVtd->size;
-	u8 **cands = EVtd->addrs;
 	while (_rdtsc() < end_tsc){
-		//for (int i = 0; i < WTD; i++){
-			// repeatedly access pages in the eviction set for the directory
-			//_maccess(EVtd[i]);
-		//}
-		tconf->traverse(cands, cnt, tconf);
+		for (int i = 0; i < cnt; i++){
+			_maccess(EVtd[i]);
+		}
 	}
 }
 
-void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, EVSet *EVl2_mul, uint64_t threshold, uint8_t *page_mul){
+void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul){
 
 	// setup handling incoming data
 	uint64_t recv_int = 0;
@@ -142,9 +139,8 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, EVSet *EVl2_mul
 	uint64_t next_evict = start_tsc;
 	uint64_t next_reload = start_tsc + 2 * EPOCH_LENGTH / 3;
 
-	EVTestConfig *tconf = &EVl2_mul->config->test_config;
-	size_t cnt = EVl2_mul->size;
-	u8 **cands = EVl2_mul->addrs;
+	// EVTestConfig *tconf = &EVl2_mul->config->test_config;
+	// u8 **cands = EVl2_mul->addrs;
 
 	//main receiver loop
 	for (uint64_t i = 0; i < msg_len; i++){
@@ -155,7 +151,12 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, EVSet *EVl2_mul
 		// for (int j = 0; j < WL2; j ++){
 		//	_maccess(EVl2_mul[j]);
 		// }
-		tconf->traverse(cands, cnt, tconf);
+		for (int j = 0; j < 6; j++){
+			for (int i = 0; i < cnt; i++){
+				_maccess(EVl2_mul[i]);
+			}
+		}
+		 // tconf->traverse(cands, cnt, tconf);
 
 		// wait for side channel transmission 
 		busy_wait_until(next_reload);
@@ -198,24 +199,54 @@ int main(){
 	uint8_t *page_sqr = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	uint8_t *page_mul = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
+	if (cache_env_init(1)) {
+        _error("Failed to initialize cache env!\n");
+        return EXIT_FAILURE;
+    }
+
+	cache_oracle_init();
+	
 	// allcoate pointers for the eviction sets
-	EVSet *EVtd = NULL;
-	EVSet *EVl2_mul = NULL;
+	// EVSet *EVtd = NULL;
+	// EVSet *EVl2_mul = NULL;
+
+
+	// TODO NEED TO CALL evcands_new to generate canditates in the main function, so dont have pauge fault issues
+	// ACTUALLY, CAN PASS IN AN EVBUFFER THERe
+	// evbuffer_new
+	// allocate the ev buffer
+	// TODO FREE THIS MEMORY
+	EVCandsConfig temp_evcands_config = {.scaling = 3, .filter_ev = NULL};
+	EVBuffer *evb_td = evbuffer_new(detected_l3, &temp_evcands_config);
+	EVCands *evcand_l2 = evcands_new(detected_l2, &((&def_l2_ev_config)->cands_config), NULL);
+	evcands_populate(page_offset(page_mul), evcand_l2, &((&def_l2_ev_config)->cands_config));
+
+
+	uint8_t **EVtd = calloc(WTD + 1, sizeof(uint8_t *));
+	uint8_t **EVl2_mul = calloc(WL2 + 1, sizeof(uint8_t *));
+	uint8_t cnt_td = WTD;
+	uint8_t cnt_l2 = WL2;
 
 	// calibrate the latency
 	uint64_t threshold = calibrate_latency();
 
 	// generate the eviction sets
-	single_llc_evset(page_mul, EVl2_mul, EVtd);
+	single_llc_evset(page_mul, EVl2_mul, &cnt_l2, EVtd, &cnt_td, evb_td, evcand_l2);
 
 
 	// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
 	uint64_t msg_len = sizeof(uint64_t) * 8;
     uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH;
+	// attack_helper(start_tsc, msg_len, EVtd);
+	// attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+	// printf("Done with helper\n");
+	// attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
+	// printf("done with attacker\n");
+	
 	pid_t pid = fork();
 	if (pid == 0){
 		// Victim/ sender
-		simple_side_channel_sender(start_tsc, msg_len, page_sqr, page_mul, msg);
+		// simple_side_channel_sender(start_tsc, msg_len, page_sqr, page_mul, msg);
 		goto cleanup;
 
 	}
@@ -223,17 +254,20 @@ int main(){
 		pid_t pid2 = fork();
 		if (pid2 == 0){
 			// helper 0 
-			attack_helper(start_tsc, msg_len, EVtd);
+			printf("Helper 0\n");
+			attack_helper(start_tsc, msg_len, EVtd, cnt_td);
 		}
 		else if (pid2 > 0) {
 			pid_t pid3 = fork();
 			if (pid3 == 0){
 				// helper 1
-				attack_helper(start_tsc, msg_len, EVtd);
+				printf("Helper 1\n");
+				attack_helper(start_tsc, msg_len, EVtd, cnt_td);
 			}
 			else if (pid3 > 0){
 				// primary process is attacker
-				attacker_side_channel(start_tsc, msg_len, EVl2_mul, threshold, page_mul);
+				printf("Attacker\n");
+				attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
 				wait(NULL); //wait for child process
 			}
 			else{

@@ -1,8 +1,8 @@
 // from the professor's code
 #include "build_ev.h"
-
 #include "core.h"
 #include "cache/cache.h"
+#include "evset.h"
 #include "sync.h"
 #include <math.h>
 #include <getopt.h>
@@ -16,18 +16,30 @@ static bool l2_filter = true, single_thread = false, has_hugepage = false;
 static helper_thread_ctrl hctrl;
 
 
-int single_llc_evset(uint8_t *target, EVSet *l2_evset, EVSet *sf_evset) {
-    // EVSet *l2_evset = NULL;
+
+
+// int single_llc_evset(uint8_t *target, EVSet *l2_evset_2, EVSet *sf_evset, EVBuildConfig sf_config) {
+int single_llc_evset(uint8_t *target, uint8_t **EVl2_mul, uint8_t *cnt_l2, uint8_t **EVtd, uint8_t *cnt_td, EVBuffer *evb_td, EVCands *evcand_l2) {
+    EVSet *l2_evset = NULL;
     u64 filter_duration = 0, start = 0, end = 0;
 
+    printf("HERE 0\n");
     start = time_ns();
     for (u32 r = 0; r < 10; r++) {
-        l2_evset = build_l2_EVSet(target, &def_l2_ev_config, NULL);
+        l2_evset = build_l2_EVSet(target, &def_l2_ev_config, evcand_l2);
+        // l2_evset = build_l2_EVSet(target, &def_l2_ev_config, NULL);
         if (l2_evset && l2_evset->size == detected_l2->n_ways &&
             generic_evset_test(target, l2_evset) == EV_POS) {
             break;
         }
     }
+
+    *cnt_l2 = l2_evset->size;
+    memcpy(EVl2_mul, l2_evset->addrs, sizeof(evcand_l2) * (*cnt_l2));
+
+
+    printf("HERE 1\n");
+    
     end = time_ns();
     filter_duration += end - start;
 
@@ -35,7 +47,6 @@ int single_llc_evset(uint8_t *target, EVSet *l2_evset, EVSet *sf_evset) {
         _error("Failed to build an L2 evset\n");
         return EXIT_FAILURE;
     }
-
     if (has_hugepage) {
         cache_use_hugepage();
     }
@@ -50,11 +61,14 @@ int single_llc_evset(uint8_t *target, EVSet *l2_evset, EVSet *sf_evset) {
     sf_config.algo_config.ret_partial = true;
     sf_config.algo_config.extra_cong = extra_cong;
 
+        printf("HERE 2\n");
+
     if (!l2_filter || has_hugepage) {
         sf_config.cands_config.filter_ev = NULL;
     }
 
-    EVCands *cands = evcands_new(detected_l3, &sf_config.cands_config, NULL);
+    EVCands *cands = evcands_new(detected_l3, &sf_config.cands_config, evb_td);
+    printf("HERE 3\n");
     if (!cands) {
         _error("Failed to allocate evcands\n");
         return EXIT_FAILURE;
@@ -86,7 +100,7 @@ int single_llc_evset(uint8_t *target, EVSet *l2_evset, EVSet *sf_evset) {
 
     reset_evset_stats();
     start = time_ns();
-    sf_evset = build_skx_sf_EVSet(target, &sf_config, cands);
+    EVSet *sf_evset = build_skx_sf_EVSet(target, &sf_config, cands);
     end = time_ns();
     if (!sf_evset) {
         _error("Failed to build evset\n");
@@ -119,6 +133,10 @@ int single_llc_evset(uint8_t *target, EVSet *l2_evset, EVSet *sf_evset) {
         }
         printf("Match: %lu\n", match);
     }
+
+    // EVtd = sf_evset->addrs;
+    *cnt_td = sf_evset->size;
+    memcpy(EVtd, sf_evset->addrs, sizeof(cands) * (*cnt_td));
 
     return EXIT_SUCCESS;
 }
