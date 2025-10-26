@@ -88,7 +88,7 @@ static inline void busy_wait_until(uint64_t until) {
 
 uint64_t calibrate_latency(){
 	// TODO IMPLEMENT CALIBRATING LATENCY
-	uint64_t foo = 80;
+	uint64_t foo = 160;
 	return foo;
 }
 
@@ -151,11 +151,15 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 		// for (int j = 0; j < WL2; j ++){
 		//	_maccess(EVl2_mul[j]);
 		// }
+		// TODO UNCOMMENT TRYING EXPERIMENT
+		/*
 		for (int j = 0; j < 6; j++){
-			for (int i = 0; i < cnt; i++){
-				_maccess(EVl2_mul[i]);
+			for (int m = 0; m < cnt; m++){
+				_maccess(EVl2_mul[m]);
 			}
 		}
+			*/
+		_lfence();
 		 // tconf->traverse(cands, cnt, tconf);
 
 		// wait for side channel transmission 
@@ -193,11 +197,49 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 
 }
 
+void test_ev_set(uint8_t *target, uint8_t **EVl2_mul, uint8_t cnt_l2, uint8_t **EVtd, uint8_t cnt_td){
+	printf("Testing eviction\n");
+
+	for (int i =0; i < 5 ; i++){
+		_maccess(target);
+		uint64_t start = _timer_start();
+		_maccess(target);
+		uint64_t lat = _timer_end() - start;
+		printf("Non evict latency: %lu\n", lat);
+
+		for (int j = 0 ; j < 6; j++){
+			for (int m = 0; m < cnt_l2; m++){
+				_maccess(EVl2_mul[m]);
+			}
+		}
+		start = _timer_start();
+		_maccess(target);
+		lat = _timer_end() - start;
+		printf("L2 evict latency: %lu\n", lat);
+
+		for (int j = 0 ; j < 6; j++){
+			for (int m = 0; m < cnt_l2; m++){
+				_maccess(EVl2_mul[m]);
+			}
+		}
+		for (int j = 0 ; j < 6; j++){
+			for (int m = 0; m < cnt_td; m++){
+				_maccess(EVtd[m]);
+			}
+		}
+		start = _timer_start();
+		_maccess(target);
+		lat = _timer_end() - start;
+		printf("td evict latency: %lu\n", lat);
+	}
+
+}
+
 int main(){
 	int ret = 0;
 	// make the memory regions take up multiple pages, so they should not co locate
-	uint8_t *page_sqr = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	uint8_t *page_mul = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	uint8_t *page_sqr = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
 	if (cache_env_init(1)) {
         _error("Failed to initialize cache env!\n");
@@ -233,6 +275,16 @@ int main(){
 	// generate the eviction sets
 	single_llc_evset(page_mul, EVl2_mul, &cnt_l2, EVtd, &cnt_td, evb_td, evcand_l2);
 
+	_clflush(page_mul);
+	flush_array(EVl2_mul, cnt_l2);
+	flush_array(EVtd, cnt_td);
+	_lfence();
+
+	printf("cnt_td: %d\n", cnt_td);
+	printf("cnt_l2: %d\n", cnt_l2);
+	
+	test_ev_set(page_mul, EVl2_mul, cnt_l2, EVtd, cnt_td);
+
 
 	// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
 	uint64_t msg_len = sizeof(uint64_t) * 8;
@@ -246,7 +298,7 @@ int main(){
 	pid_t pid = fork();
 	if (pid == 0){
 		// Victim/ sender
-		// simple_side_channel_sender(start_tsc, msg_len, page_sqr, page_mul, msg);
+		simple_side_channel_sender(start_tsc, msg_len, page_sqr, page_mul, msg);
 		goto cleanup;
 
 	}
@@ -256,6 +308,7 @@ int main(){
 			// helper 0 
 			printf("Helper 0\n");
 			attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+			printf("Helper 0 done\n");
 		}
 		else if (pid2 > 0) {
 			pid_t pid3 = fork();
@@ -263,6 +316,7 @@ int main(){
 				// helper 1
 				printf("Helper 1\n");
 				attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+				printf("Helper 1 done\n");
 			}
 			else if (pid3 > 0){
 				// primary process is attacker
