@@ -1,5 +1,5 @@
 // call as below:
-// taskset -c 0,2,4,6 ./evict_reload 
+// taskset -c 0,2,4,6 ./force_exclusive 
 
 // #include "../inline_asm.h"
 #include <assert.h>
@@ -29,7 +29,6 @@
 
 #define WTD 11
 #define WL2 16
-#define N_HELPER 2
 
 // Message we want to send
 const uint64_t msg = 0x12345678910;
@@ -89,7 +88,7 @@ static inline void busy_wait_until(uint64_t until) {
 
 uint64_t calibrate_latency(){
 	// TODO IMPLEMENT CALIBRATING LATENCY
-	uint64_t foo = 180;
+	uint64_t foo = 160;
 	return foo;
 }
 
@@ -119,24 +118,18 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *p
     }
 }
 
-void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt, bool *flag){
+void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 	// stop the helper after a certain number of epochs
 	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1));
 	while (_rdtsc() < end_tsc){
-		if (*flag){
-			// printf("helper access\n");
-			for (int i = 0; i < cnt; i++){
-				_maccess(EVtd[i]);
-			}
-			// *flag = false;
+		for (int i = 0; i < cnt; i++){
+			_maccess(EVtd[i]);
 		}
 	}
-	// printf("flag: %d\n", *flag);
-	// printf("flag addr %p\n", flag);
 }
 
-void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul, bool *helper_flag){
+void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul){
 
 	// setup handling incoming data
 	uint64_t recv_int = 0;
@@ -158,37 +151,19 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 		// for (int j = 0; j < WL2; j ++){
 		//	_maccess(EVl2_mul[j]);
 		// }
-		
+		// TODO UNCOMMENT TRYING EXPERIMENT
+		/*
 		for (int j = 0; j < 6; j++){
 			for (int m = 0; m < cnt; m++){
 				_maccess(EVl2_mul[m]);
 			}
 		}
-
-		// printf("here 1\n");
-		// trigger helpers
-		for (int i =0 ; i < N_HELPER; i++){
-			helper_flag[i] = true;
-			// printf("attacker flag addr: %p\n", &(helper_flag[i]));
-		}
-		// printf("here 2\n");
-		// wait for helpers to be done 
-		/* 
-		for (int i =0 ; i < N_HELPER; i++){
-			while(helper_flag[i] == true);
-		}
-		*/
-		// printf("here 3\n");
-
+			*/
 		_lfence();
 		 // tconf->traverse(cands, cnt, tconf);
 
 		// wait for side channel transmission 
 		busy_wait_until(next_reload);
-		for (int i =0 ; i < N_HELPER; i++){
-			helper_flag[i] = false;
-			// printf("attacker flag addr: %p\n", &(helper_flag[i]));
-		}
 		next_reload += EPOCH_LENGTH;
 
 		// reload
@@ -294,13 +269,6 @@ int main(){
 	uint8_t cnt_td = WTD;
 	uint8_t cnt_l2 = WL2;
 
-	// bool *helper_flag = calloc(N_HELPER, sizeof(bool));
-	bool *helper_flag = mmap(NULL, sizeof(bool) * N_HELPER, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
-	for (int i =0 ; i < N_HELPER; i++){
-		helper_flag[i] = false;
-	}
-
 	// calibrate the latency
 	uint64_t threshold = calibrate_latency();
 
@@ -339,7 +307,7 @@ int main(){
 		if (pid2 == 0){
 			// helper 0 
 			printf("Helper 0\n");
-			attack_helper(start_tsc, msg_len, EVtd, cnt_td, &(helper_flag[0]));
+			attack_helper(start_tsc, msg_len, EVtd, cnt_td);
 			printf("Helper 0 done\n");
 		}
 		else if (pid2 > 0) {
@@ -347,13 +315,13 @@ int main(){
 			if (pid3 == 0){
 				// helper 1
 				printf("Helper 1\n");
-				attack_helper(start_tsc, msg_len, EVtd, cnt_td, &(helper_flag[1]));
+				attack_helper(start_tsc, msg_len, EVtd, cnt_td);
 				printf("Helper 1 done\n");
 			}
 			else if (pid3 > 0){
 				// primary process is attacker
 				printf("Attacker\n");
-				attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul, helper_flag);
+				attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
 				wait(NULL); //wait for child process
 			}
 			else{
