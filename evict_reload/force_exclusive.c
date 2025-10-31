@@ -29,10 +29,11 @@
 
 #define WTD 11
 #define WL2 16
+#define NUM_REPEATS 1
 
 // Message we want to send
-const uint64_t msg = 0x12345678910;
-
+// const uint64_t msg = 0x12345678910;
+const uint64_t msg = 3141592653589793238;
 
 // Code for the attack victim if not doing a side channel
 /*
@@ -77,6 +78,14 @@ void print_bin(uint64_t val){
 	printf("\n");
 }
 
+uint64_t count_mismatch(uint64_t xor_res){
+	uint64_t count = 0;
+	while (xor_res > 0){
+		xor_res &=(xor_res-1);
+		count ++;
+	}
+	return count;
+}
 
 // Busy wait until the timestamp counter passes a certain value
 // There's no guarantee on how far we have gone passed the intended value
@@ -129,7 +138,7 @@ void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t
 	}
 }
 
-void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul){
+uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul){
 
 	// setup handling incoming data
 	uint64_t recv_int = 0;
@@ -138,7 +147,9 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 	// setup the timers for the side channel
 	uint64_t next_evict = start_tsc;
 	uint64_t next_reload = start_tsc + 2 * EPOCH_LENGTH / 3;
-
+	_maccess(page_mul);
+	_lfence();
+	
 	// EVTestConfig *tconf = &EVl2_mul->config->test_config;
 	// u8 **cands = EVl2_mul->addrs;
 
@@ -170,7 +181,7 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
 		uint64_t start = _timer_start();
 		_maccess(page_mul);
 		uint64_t lat = _timer_end() - start;
-		bool received_val = (lat < threshold);
+		bool received_val = (lat > threshold);
 		
 
 		// Print the results
@@ -194,6 +205,12 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
     print_bin(msg);
     printf("Received:  ");
     print_bin(recv_int);
+
+	uint64_t difference = msg ^ recv_int;
+	print_bin(difference);
+	uint64_t num_mismatch = count_mismatch(difference);
+	printf("mismatching bits: %lu\n", num_mismatch);
+	return num_mismatch;
 
 }
 
@@ -238,13 +255,15 @@ void test_ev_set(uint8_t *target, uint8_t **EVl2_mul, uint8_t cnt_l2, uint8_t **
 int main(){
 	int ret = 0;
 	// make the memory regions take up multiple pages, so they should not co locate
+	uint64_t total_mismatch = 0;
+	
 	uint8_t *page_mul = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	uint8_t *page_sqr = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
 	if (cache_env_init(1)) {
-        _error("Failed to initialize cache env!\n");
-        return EXIT_FAILURE;
-    }
+		_error("Failed to initialize cache env!\n");
+		return EXIT_FAILURE;
+	}
 
 	cache_oracle_init();
 	
@@ -285,50 +304,57 @@ int main(){
 	
 	test_ev_set(page_mul, EVl2_mul, cnt_l2, EVtd, cnt_td);
 
+	for (int i = 0; i < NUM_REPEATS; i ++ ){
+		_lfence();
+		// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
+		uint64_t msg_len = sizeof(uint64_t) * 8;
+		uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH;
+		// attack_helper(start_tsc, msg_len, EVtd);
+		// attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+		// printf("Done with helper\n");
+		// attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
+		// printf("done with attacker\n");
+		
+		pid_t pid = fork();
+		if (pid == 0){
+			// Victim/ sender
+			simple_side_channel_sender(start_tsc, msg_len, page_sqr, page_mul, msg);
 
-	// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
-	uint64_t msg_len = sizeof(uint64_t) * 8;
-    uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH;
-	// attack_helper(start_tsc, msg_len, EVtd);
-	// attack_helper(start_tsc, msg_len, EVtd, cnt_td);
-	// printf("Done with helper\n");
-	// attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
-	// printf("done with attacker\n");
-	
-	pid_t pid = fork();
-	if (pid == 0){
-		// Victim/ sender
-		simple_side_channel_sender(start_tsc, msg_len, page_sqr, page_mul, msg);
-		goto cleanup;
-
-	}
-	else if (pid > 0){
-		pid_t pid2 = fork();
-		if (pid2 == 0){
-			// helper 0 
-			printf("Helper 0\n");
-			attack_helper(start_tsc, msg_len, EVtd, cnt_td);
-			printf("Helper 0 done\n");
 		}
-		else if (pid2 > 0) {
-			pid_t pid3 = fork();
-			if (pid3 == 0){
-				// helper 1
-				printf("Helper 1\n");
+		else if (pid > 0){
+			pid_t pid2 = fork();
+			if (pid2 == 0){
+				// helper 0 
+				printf("Helper 0\n");
 				attack_helper(start_tsc, msg_len, EVtd, cnt_td);
-				printf("Helper 1 done\n");
+				printf("Helper 0 done\n");
 			}
-			else if (pid3 > 0){
-				// primary process is attacker
-				printf("Attacker\n");
-				attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
+			else if (pid2 > 0) {
+				pid_t pid3 = fork();
+				if (pid3 == 0){
+					// helper 1
+					printf("Helper 1\n");
+					attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+					printf("Helper 1 done\n");
+				}
+				else if (pid3 > 0){
+					// primary process is attacker
+					printf("Attacker\n");
+					total_mismatch += attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
+					wait(NULL); //wait for child process
+				}
+				else{
+					perror("fork");
+					ret = errno;
+					goto cleanup;
+				}	
 				wait(NULL); //wait for child process
 			}
 			else{
 				perror("fork");
 				ret = errno;
 				goto cleanup;
-			}	
+			}
 			wait(NULL); //wait for child process
 		}
 		else{
@@ -336,19 +362,13 @@ int main(){
 			ret = errno;
 			goto cleanup;
 		}
-		wait(NULL); //wait for child process
 	}
-	else{
-		perror("fork");
-		ret = errno;
-		goto cleanup;
-	}
-
 	cleanup:
 		munmap(page_sqr, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
 		munmap(page_mul, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
 
+
 		
-		return ret;
+	return ret;
 }
 

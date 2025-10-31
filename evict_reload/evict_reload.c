@@ -32,7 +32,8 @@
 #define N_HELPER 2
 
 // Message we want to send
-const uint64_t msg = 0x12345678910;
+// const uint64_t msg = 0x12345678910;
+const uint64_t msg = 3141592653589793238;
 
 
 // Code for the attack victim if not doing a side channel
@@ -76,6 +77,15 @@ void print_bin(uint64_t val){
 		printf("%lu", (val >> i) & 1);
 	}
 	printf("\n");
+}
+
+uint64_t count_mismatch(uint64_t xor_res){
+	uint64_t count = 0;
+	while (xor_res > 0){
+		xor_res &=(xor_res-1);
+		count ++;
+	}
+	return count;
 }
 
 
@@ -219,6 +229,11 @@ void attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_
     print_bin(msg);
     printf("Received:  ");
     print_bin(recv_int);
+
+	uint64_t difference = msg ^ recv_int;
+	print_bin(difference);
+	uint64_t num_mismatch = count_mismatch(difference);
+	printf("mismatching bits: %lu\n", num_mismatch);
 
 }
 
