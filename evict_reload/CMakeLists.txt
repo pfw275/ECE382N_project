@@ -38,3 +38,6 @@ target_link_libraries(evict_reload PUBLIC "CACHE" m pthread PMU "BUILD_EV")
 
 add_executable(force_exclusive force_exclusive.c)
 target_link_libraries(force_exclusive PUBLIC "CACHE" m pthread PMU "BUILD_EV")
+
+add_executable(force_exclusive_side force_exclusive_side.c)
+target_link_libraries(force_exclusive_side PUBLIC "CACHE" m pthread PMU "BUILD_EV")
