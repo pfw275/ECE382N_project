@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 // #include <x86intrin.h>
 #include <stdbool.h>
 // #include find_eviction_set.h
@@ -25,7 +26,8 @@
 #define NUM_PAGE_PER_ALLOC 5
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
 
-#define EPOCH_LENGTH 2000000. // A very conservative epoch length
+// #define EPOCH_LENGTH 2000000. // A very conservative epoch length
+#define EPOCH_LENGTH 20000
 
 #define WTD 11
 #define WL2 16
@@ -140,6 +142,7 @@ void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t
 
 uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul){
 
+	
 	// setup handling incoming data
 	uint64_t recv_int = 0;
 	uint64_t recv_mask = 1;
@@ -152,6 +155,10 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 	
 	// EVTestConfig *tconf = &EVl2_mul->config->test_config;
 	// u8 **cands = EVl2_mul->addrs;
+	busy_wait_until(start_tsc);
+
+	struct timespec start_stamp, end_stamp;
+	clock_gettime(CLOCK_MONOTONIC_RAW, &start_stamp);
 
 	//main receiver loop
 	for (uint64_t i = 0; i < msg_len; i++){
@@ -198,6 +205,11 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 		}
 
 	}
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end_stamp);
+	uint64_t delta_ns = (end_stamp.tv_sec - start_stamp.tv_sec) * 1000000000 + (end_stamp.tv_nsec - start_stamp.tv_nsec);
+	// uint64_t attack_end_time = _rdtsc();
+	// uint64_t total_attack_time = attack_end_time - start_tsc;
 	
 	// print overall results
 	printf("-----------------------------------------\n");
@@ -210,6 +222,9 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 	print_bin(difference);
 	uint64_t num_mismatch = count_mismatch(difference);
 	printf("mismatching bits: %lu\n", num_mismatch);
+	printf("total attack time = %luns\n", delta_ns);
+	uint64_t bandwidth = sizeof(msg) * 1000000000/ delta_ns;
+	printf("bandwidth = %lu B/s\n", bandwidth);
 	return num_mismatch;
 
 }
@@ -308,7 +323,7 @@ int main(){
 		_lfence();
 		// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
 		uint64_t msg_len = sizeof(uint64_t) * 8;
-		uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH;
+		uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH + 100 * EPOCH_LENGTH;
 		// attack_helper(start_tsc, msg_len, EVtd);
 		// attack_helper(start_tsc, msg_len, EVtd, cnt_td);
 		// printf("Done with helper\n");

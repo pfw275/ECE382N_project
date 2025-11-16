@@ -1,5 +1,5 @@
 // call as below:
-// taskset -c 0,2,4,6 ./force_exclusive 
+// taskset -c 0,2,4,6 ./force_exclusive_side
 
 // #include "../inline_asm.h"
 #include <assert.h>
@@ -26,10 +26,17 @@
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
 
 #define EPOCH_LENGTH 2000000 // A very conservative epoch length
-#define ATTACKER_SAMPLE_INTERVAL 100000
+#define ATTACKER_SAMPLE_INTERVAL 140000
 #define SENDER_DELAY 2000000
 #define SENDER_START_DELAY 2000000
+
+//#define EPOCH_LENGTH 200000 // A very conservative epoch length
+// #define ATTACKER_SAMPLE_INTERVAL 600
+// #define SENDER_DELAY 4000
+// #define SENDER_START_DELAY 90000
+#define HELPER_RUN_MULT 10
 #define N_SAMPLE 1000
+#define ATTACKER_PRINT_DELAY 2000000
 
 #define WTD 11
 #define WL2 16
@@ -146,12 +153,19 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *p
 void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 	// stop the helper after a certain number of epochs
-	uint64_t end_tsc = start_tsc + (ATTACKER_SAMPLE_INTERVAL * (N_SAMPLE + 10));
+	uint64_t end_tsc = start_tsc + (ATTACKER_SAMPLE_INTERVAL * (N_SAMPLE * HELPER_RUN_MULT));
+	uint64_t total_helper_time =0;
+	int num_itr = 0;
 	while (_rdtsc() < end_tsc){
+		uint64_t start = _timer_start();
 		for (int i = 0; i < cnt; i++){
 			_maccess(EVtd[i]);
 		}
+		uint64_t lat = _timer_end() - start;
+		total_helper_time = total_helper_time + lat;
+		num_itr += 1;
 	}
+	printf("avg helper time =  %lu", total_helper_time/num_itr);
 }
 
 uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *page_mul, uint64_t *attacker_timestamps, uint64_t *attacker_vals){
@@ -294,7 +308,9 @@ int main(){
 	int ret = 0;
 	// make the memory regions take up multiple pages, so they should not co locate
 	uint64_t total_mismatch = 0;
-	
+	uint64_t *attacker_timestamps = calloc(N_SAMPLE, sizeof(uint64_t));
+	uint64_t *attacker_vals = calloc(N_SAMPLE, sizeof(uint64_t));
+
 	uint8_t *page_mul = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	uint8_t *page_sqr = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
@@ -354,8 +370,6 @@ int main(){
 
 	uint64_t *sender_timestamps = calloc(msg_len, sizeof(uint64_t));
 	bool *sender_values = calloc(msg_len, sizeof(bool));
-	uint64_t *attacker_timestamps = calloc(N_SAMPLE, sizeof(uint64_t));
-	uint64_t *attacker_vals = calloc(N_SAMPLE, sizeof(uint64_t));
 	
 	pid_t pid = fork();
 	if (pid == 0){
@@ -384,6 +398,8 @@ int main(){
 				printf("Attacker\n");
 				total_mismatch += attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul, attacker_timestamps, attacker_vals);
 				wait(NULL); //wait for child process
+				uint64_t now = _rdtsc();
+				busy_wait_until(now + ATTACKER_PRINT_DELAY); 
 				print_results(msg_len, sender_timestamps, sender_values, attacker_timestamps, attacker_vals);
 
 			}
