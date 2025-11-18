@@ -1,5 +1,5 @@
 // call as below:
-// taskset -c 0,2,4,6 ./force_exclusive 
+// taskset -c 0,2,4,6 ./attack_PandP 
 
 // #include "../inline_asm.h"
 #include <assert.h>
@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <math.h>
 // #include <x86intrin.h>
 #include <stdbool.h>
 // #include find_eviction_set.h
@@ -25,9 +26,9 @@
 #define NUM_PAGE_PER_ALLOC 5
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
 
-#define EPOCH_LENGTH 2000000. // A very conservative epoch length
-
-#define WTD 11
+//#define EPOCH_LENGTH 2000000. // A very conservative epoch length
+#define EPOCH_LENGTH 200000. // A very conservative epoch length
+#define WTD 11 
 #define WL2 16
 #define NUM_REPEATS 1
 #define ENABLE_HELPERS 0
@@ -103,17 +104,23 @@ uint64_t calibrate_latency(){
 	return foo;
 }
 
-
+uint64_t calibrate_l2_to_llc_latency(){
+	// TODO IMPLEMENT CALIBRATING LATENCY
+	uint64_t foo = 66;
+	return foo;
+}
 
 void process_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *target_page, uint64_t msg) {
 	// Function pulled from the professor, for initial validation of attack
     uint64_t next_transmission = start_tsc + EPOCH_LENGTH / 3;
     bool transmit;
     for (uint64_t i = 0; i < msg_len; i++) {
+		// Synchronize send for each epoch 
         busy_wait_until(next_transmission);
         next_transmission += EPOCH_LENGTH;
 
-        // Sender transmits the information
+        // Sender transmits the information by
+		// Conditionally accessing the target page 
         transmit = msg & 1;
         if (transmit){
         	_maccess(target_page);
@@ -150,30 +157,29 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 	// setup the timers for the side channel
 	uint64_t next_evict = start_tsc;
 	uint64_t next_reload = start_tsc + 2 * EPOCH_LENGTH / 3;
-	//_maccess(target_page);
-	//_lfence();
-	
-	// EVTestConfig *tconf = &EVl2_mul->config->test_config;
-	// u8 **cands = EVl2_mul->addrs;
 
 	//main receiver loop
 	for (uint64_t i = 0; i < msg_len; i++){
-		// evict
-		// TODO THE PAPER MENTIONS ACCESSING THESE 6 TIMES, WHY?
+		// Synchronize receive for each epoch
 		busy_wait_until(next_evict);
 		next_evict += EPOCH_LENGTH;
 		
 		// Prime
-		for (int ii = 0; ii < cnt_l2; ii ++){
-			_maccess(EVl2_mul[ii]);
-		}
+		// Access L2 EV set to 
 		
-		for (int jj = 0; jj < 6; jj++){
-			for (int ii = 0; ii < cnt_td; ii++){
-				_maccess(EVtd[ii]);
+		for (int j = 0 ; j < 6; j++){
+			for (int ii = 0; ii < cnt_l2; ii ++){
+				_maccess(EVl2_mul[ii]);
 			}
 		}
 		
+
+		for (int j = 0 ; j < 6; j++){
+			for (int ii = 0; ii < cnt_td; ii ++){
+				_maccess(EVtd[ii]);
+			}
+		}
+	
 		_lfence();
 		 // tconf->traverse(cands, cnt, tconf);
 
@@ -183,31 +189,90 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 
 		// Probe
 		int ev_kicked_count = 0;
-		for (int ii = 0; ii < cnt_l2; ii ++){
+		
+		// Time access for TD and L2 EV
+		/*
+		for (int ii = 0; ii < cnt_l2; ii ++) {
 			uint64_t start = _timer_start();
 			_maccess(EVl2_mul[ii]);
 			uint64_t lat = _timer_end() - start;
+			printf("EV L2 - Time Diff: %" PRIu64 " \n", lat);
 		    if (lat > threshold) {
 				ev_kicked_count++;
 			}
 		}
+		*/
 		
-		for (int ii = 0; ii < cnt_td; ii++){
+		
+		// Static Threshold Method
+		for (int ii = 0; ii < cnt_td; ii++) {
 			uint64_t start = _timer_start();
 			_maccess(EVtd[ii]);
 			uint64_t lat = _timer_end() - start;
+			printf("EV TD - Time Diff: %" PRIu64 " \n", lat);
 		    if (lat > threshold) {
 				ev_kicked_count++;
 			}
 		}
-
-		bool received_val = (ev_kicked_count > 1);
-
-		//uint64_t start = _timer_start();
-		//_maccess(target_page);
-		//uint64_t lat = _timer_end() - start;
-		//bool received_val = (lat > threshold);
+		bool received_val = (ev_kicked_count > 0);
 		
+
+
+
+		// Standard Deviation Detection Method
+		/*
+		uint64_t *times = malloc(cnt_td * sizeof(uint64_t));
+		for (int ii = 0; ii < cnt_td; ii++) {
+			uint64_t start = _timer_start();
+			_maccess(EVtd[ii]);
+			times[ii] = _timer_end() - start;
+			printf("EV TD - Time Diff: %" PRIu64 " \n", times[ii]);
+		    //if (lat > threshold) {
+			//	ev_kicked_count++;
+			//}
+		}
+
+    	// Compute mean
+		double sum = 0.0;
+		for (size_t ii = 0; ii < cnt_td; ii++) {
+			sum += times[ii];
+		}
+		double mean = sum / cnt_td;
+
+
+		// Compute standard deviation
+		double variance = 0.0;
+		for (size_t ii = 0; ii < cnt_td; ii++) {
+			variance += (times[ii] - mean) * (times[ii] - mean);
+		}
+		variance /= cnt_td;
+		double std_dev = sqrt(variance);
+
+		// Identify outliers (greater than mean + k * std_dev)
+		double k = 1.;
+		double outlier_threshold = mean + k * std_dev;
+
+		printf("Mean access time: %.2f cycles\n", mean);
+		printf("Standard deviation: %.2f cycles\n", std_dev);
+		printf("Outlier threshold: %.2f cycles\n", outlier_threshold);
+
+		size_t outliers = 0;
+		for (size_t ii = 0; ii < cnt_td; ii++) {
+			if (times[ii] > outlier_threshold) {
+				outliers++;
+			}
+		}
+
+		printf("Found %zu outliers out of %d accesses.\n", outliers, cnt_td);
+
+		bool received_val = (outliers > 0);
+		*/
+		/*
+		uint64_t start = _timer_start();
+		_maccess(target_page);
+		uint64_t lat = _timer_end() - start;
+		bool received_val = (lat > threshold);
+		*/
 
 		// Print the results
 		uint64_t now = _rdtsc();
@@ -222,7 +287,6 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 			}
 			recv_mask = recv_mask << 1;
 		}
-
 	}
 	
 	// print overall results
@@ -236,6 +300,15 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 	print_bin(difference);
 	uint64_t num_mismatch = count_mismatch(difference);
 	printf("mismatching bits: %lu\n", num_mismatch);
+	uint64_t false_positives = ~msg & recv_int;
+	uint64_t num_fp = count_mismatch(false_positives);
+	printf("False Positives: %lu\n", num_fp);
+	uint64_t false_negatives = msg & ~recv_int;
+	uint64_t num_fn = count_mismatch(false_negatives);
+	printf("False Negatives: %lu\n", num_fn);
+	
+
+
 	return num_mismatch;
 
 }
@@ -316,7 +389,8 @@ int main(){
 	uint8_t cnt_l2 = WL2;
 
 	// calibrate the latency
-	uint64_t threshold = calibrate_latency();
+	//uint64_t threshold = calibrate_latency();
+	uint64_t threshold = calibrate_l2_to_llc_latency();
 
 	// generate the eviction sets
 	single_llc_evset(target_page, EVl2_mul, &cnt_l2, EVtd, &cnt_td, evb_td, evcand_l2);
