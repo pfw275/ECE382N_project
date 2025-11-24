@@ -1,5 +1,5 @@
 // call as below:
-// taskset -c 0,2,4,6 ./force_exclusive 
+// taskset -c 0,2,4,6,8,10 ./force_exclusive_multi_helper 
 
 // #include "../inline_asm.h"
 #include <assert.h>
@@ -27,12 +27,14 @@
 #define SYMBOL_CNT (1 << (sizeof(char) * 8))
 
 // #define EPOCH_LENGTH 2000000. // A very conservative epoch length
-#define EPOCH_LENGTH 10000
+// #define EPOCH_LENGTH 10000
+#define EPOCH_LENGTH 9000
 // 20000 = ~14 kB/s
-#define N_EPOCH_START_DELAY 100
+#define N_EPOCH_START_DELAY 500
 // 40 sometimes works
 // need to run a little to let them sync up
 #define DUMMY_RUNS 30
+#define HELPER_ADDITIONAL_EPOCH 300
 
 #define WTD 11
 #define WL2 16
@@ -143,7 +145,7 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *p
 void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 	// stop the helper after a certain number of epochs
-	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1 + DUMMY_RUNS));
+	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1 + DUMMY_RUNS + HELPER_ADDITIONAL_EPOCH));
 	while (_rdtsc() < end_tsc){
 		for (int i = 0; i < cnt; i++){
 			_maccess(EVtd[i]);
@@ -332,6 +334,9 @@ int main(){
 	
 	test_ev_set(page_mul, EVl2_mul, cnt_l2, EVtd, cnt_td);
 
+	uint8_t ev_first_half_cnt = cnt_td / 2;
+	uint8_t ev_second_half_cnt = cnt_td - ev_first_half_cnt;
+
 	for (int i = 0; i < NUM_REPEATS; i ++ ){
 		_lfence();
 		// sizeof returns number of bytes in msg, so multiply by 8 to get the total number of bits
@@ -354,7 +359,7 @@ int main(){
 			if (pid2 == 0){
 				// helper 0 
 				printf("Helper 0\n");
-				attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+				attack_helper(start_tsc, msg_len, EVtd, ev_first_half_cnt);
 				printf("Helper 0 done\n");
 			}
 			else if (pid2 > 0) {
@@ -362,14 +367,32 @@ int main(){
 				if (pid3 == 0){
 					// helper 1
 					printf("Helper 1\n");
-					attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+					attack_helper(start_tsc, msg_len, &(EVtd[ev_first_half_cnt]), ev_second_half_cnt);
 					printf("Helper 1 done\n");
 				}
 				else if (pid3 > 0){
-					// primary process is attacker
-					printf("Attacker\n");
-					total_mismatch += attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
-					wait(NULL); //wait for child process
+					pid_t pid4 = fork();
+					if (pid4 == 0){
+						// helper 1
+						printf("Helper 2\n");
+						attack_helper(start_tsc, msg_len, EVtd, ev_first_half_cnt);
+						printf("Helper 2 done\n");
+					}
+					else if (pid4 > 0){
+						pid_t pid5 = fork();
+						if (pid5 == 0){
+							// helper 1
+							printf("Helper 3\n");
+							attack_helper(start_tsc, msg_len, &(EVtd[ev_first_half_cnt]), ev_second_half_cnt);
+							printf("Helper 3 done\n");
+						}
+						else if (pid5 > 0){
+							// primary process is attacker
+							printf("Attacker\n");
+							total_mismatch += attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
+							wait(NULL); //wait for child process
+						}
+					}
 				}
 				else{
 					perror("fork");
