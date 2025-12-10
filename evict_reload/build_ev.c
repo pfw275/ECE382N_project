@@ -68,36 +68,37 @@ int single_llc_evset(uint8_t *target, uint8_t **EVl2_mul, uint8_t *cnt_l2, uint8
     }
 
     EVCands *cands = evcands_new(detected_l3, &sf_config.cands_config, evb_td);
-    printf("HERE 3\n");
+
     if (!cands) {
         _error("Failed to allocate evcands\n");
         return EXIT_FAILURE;
     }
-
+    printf("HERE 3\n");
     start = time_ns();
     if (evcands_populate(page_offset(target), cands, &sf_config.cands_config)) {
         _error("Failed to populate evcands\n");
         return EXIT_FAILURE;
     }
+    printf("HERE 4a\n");
     end = time_ns();
     filter_duration += end - start;
     if (l2_filter) {
         _info("L2 Filter Duration: %luus\n", filter_duration / 1000);
     }
-
+    printf("HERE 4b\n");
     if (single_thread) {
         sf_config.test_config.traverse = skx_sf_cands_traverse_st;
         sf_config.test_config.need_helper = false;
     } else {
         start_helper_thread(sf_config.test_config.hctrl);
     }
-
+    printf("HERE 5\n");
     if (generic_test_eviction(target, cands->cands, cands->size,
                               &sf_config.test_config) != EV_POS) {
         _error("Not enough candidates due to filtering!\n");
         return EXIT_FAILURE;
     }
-
+    printf("HERE 6\n");
     reset_evset_stats();
     start = time_ns();
     EVSet *sf_evset = build_skx_sf_EVSet(target, &sf_config, cands);
@@ -107,22 +108,23 @@ int single_llc_evset(uint8_t *target, uint8_t **EVl2_mul, uint8_t *cnt_l2, uint8
         pprint_evset_stats();
         return EXIT_FAILURE;
     }
+    printf("HERE 7\n");
     pprint_evset_stats();
     _info("Duration: %.3fms; Size: %u; Candidates: %lu\n", (end - start) / 1e6,
           sf_evset->size, sf_evset->cands->size);
     _info("LLC EV Test Level: %d\n", precise_evset_test(target, sf_evset));
-
+    printf("HERE 8\n");
     if (sf_evset->size > SF_ASSOC) {
         // truncate the evset to a minimal evset for SF test
         sf_evset->size = SF_ASSOC;
     }
     sf_config.test_config_alt.foreign_evictor = true;
     _info("SF EV Test Level: %d\n", precise_evset_test_alt(target, sf_evset));
-
+    printf("HERE 9\n");
     if (!single_thread) {
         stop_helper_thread(sf_config.test_config.hctrl);
     }
-
+    printf("HERE 10\n");
     if (cache_oracle_inited()) {
         u64 target_hash = llc_addr_hash(target), match = 0;
         printf("Target: %p; hash=%#lx\n", target, target_hash);
@@ -133,7 +135,7 @@ int single_llc_evset(uint8_t *target, uint8_t **EVl2_mul, uint8_t *cnt_l2, uint8
         }
         printf("Match: %lu\n", match);
     }
-
+    printf("HERE 11\n");
     // EVtd = sf_evset->addrs;
     *cnt_td = sf_evset->size;
     memcpy(EVtd, sf_evset->addrs, sizeof(cands) * (*cnt_td));

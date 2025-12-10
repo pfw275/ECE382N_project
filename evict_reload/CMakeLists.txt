@@ -45,6 +45,9 @@ target_link_libraries(force_exclusive_side PUBLIC "CACHE" m pthread PMU "BUILD_E
 add_executable(attack_ER attack_ER.c)
 target_link_libraries(attack_ER PUBLIC "CACHE" m pthread PMU "BUILD_EV")
 
+add_executable(attack_ER_streamline attack_ER_streamline.c)
+target_link_libraries(attack_ER_streamline PUBLIC "CACHE" m pthread PMU "BUILD_EV")
+
 add_executable(attack_PandP attack_PandP.c)
 target_link_libraries(attack_PandP PUBLIC "CACHE" m pthread PMU "BUILD_EV")
 

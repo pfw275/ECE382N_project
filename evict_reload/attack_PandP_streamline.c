@@ -1,5 +1,5 @@
 // call as below:
-// taskset -c 0,2,4,6 ./attack_PandP 
+// taskset -c 0,2,4,6 ./attack_PandP_streamline 
 
 // #include "../inline_asm.h"
 #include <assert.h>

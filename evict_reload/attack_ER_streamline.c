@@ -113,7 +113,7 @@ uint64_t calibrate_latency(){
 
 
 
-void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *target_page, uint64_t msg) {
+void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t **target_pages, uint64_t msg) {
 	// Function pulled from the professor, for initial validation of attack
     uint64_t next_transmission = start_tsc + EPOCH_LENGTH / 3;
     bool transmit = false;
@@ -126,11 +126,9 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *t
 			transmit = msg & 1;
 			msg = msg >> 1;
 		}
-        
         if (transmit){
-        	_maccess(target_page);
+        	_maccess(target_pages[(i - DUMMY_RUNS) % NUMSTREAMS]);
         }
-
 
         // Print the epoch information
         uint64_t now = _rdtsc();
@@ -139,18 +137,20 @@ void simple_side_channel_sender(uint64_t start_tsc, uint64_t msg_len, uint8_t *t
     }
 }
 
-void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVtd, uint8_t cnt){
+void attack_helper(uint64_t start_tsc, uint64_t msg_len, uint8_t ***EVs_td, uint8_t cnt){
 	// The helper threads continuously load pages in the EV so they are in shared, to control the replacement policy
 	// stop the helper after a certain number of epochs
 	uint64_t end_tsc = start_tsc + (EPOCH_LENGTH * (msg_len + 1 + DUMMY_RUNS));
 	while (_rdtsc() < end_tsc){
-		for (int i = 0; i < cnt; i++){
-			_maccess(EVtd[i]);
+        for (int ii = 0; ii < NUMSTREAMS; ii++) {
+            for (int jj = 0; jj < cnt; jj++){
+			    _maccess(EVs_td[ii][jj]);
+            }
 		}
 	}
 }
 
-uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **EVl2_mul, uint8_t cnt, uint64_t threshold, uint8_t *target_page){
+uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t ***EVs_l2, uint8_t cnt, uint64_t threshold, uint8_t **target_pages){
 	// setup handling incoming data
 	uint64_t recv_int = 0;
 	uint64_t recv_mask = 1;
@@ -192,7 +192,7 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 
 		// reload
 		uint64_t start = _timer_start();
-		_maccess(target_page);
+		_maccess(target_pages[(i - DUMMY_RUNS) % NUMSTREAMS]);
 		uint64_t lat = _timer_end() - start;
 		//printf("Receive Access Time: %" PRIu64 " \n", lat);
 		bool received_val = (lat > threshold);
@@ -231,7 +231,7 @@ uint64_t attacker_side_channel(uint64_t start_tsc, uint64_t msg_len, uint8_t **E
 	print_bin(difference);
 	uint64_t num_mismatch = count_mismatch(difference);
 	printf("mismatching bits: %lu\n", num_mismatch);
-		uint64_t false_positives = ~msg & recv_int;
+	uint64_t false_positives = ~msg & recv_int;
 	uint64_t num_fp = count_mismatch(false_positives);
 	printf("False Positives: %lu\n", num_fp);
 	uint64_t false_negatives = msg & ~recv_int;
@@ -295,20 +295,20 @@ int main(){
 	// make the memory regions take up multiple pages, so they should not co locate
 	uint64_t total_mismatch = 0;
 	
-	void **pages = malloc(NUMSTREAMS * sizeof(void *));
+	uint8_t **target_pages = malloc(NUMSTREAMS * sizeof(uint64_t *));
 
     for (int i = 0; i < NUMSTREAMS; i++) {
         // Allocate one page using mmap
-        pages[i] = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        target_pages[i] = mmap(NULL, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC, PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 		
 
-        if (pages[i] == MAP_FAILED) {
+        if (target_pages[i] == MAP_FAILED) {
             perror("mmap");
             // Cleanup already allocated pages
             for (int j = 0; j < i; j++) {
-                munmap(pages[j], CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
+                munmap(target_pages[j], CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
             }
-            free(pages);
+            free(target_pages);
             return EXIT_FAILURE;
         }
     }
@@ -376,12 +376,12 @@ int main(){
             free(EVs_l2);
             return EXIT_FAILURE;
         }
-		evcands_populate(page_offset(pages[i]), evcand_l2, &((&def_l2_ev_config)->cands_config));
-		single_llc_evset(pages[i], EVs_l2[i], &cnt_l2, EVs_td[i], &cnt_td, evb_td, evcand_l2);
-		test_ev_set(pages[i], EVs_l2[i], cnt_l2, EVs_td[i], cnt_td);
+		evcands_populate(page_offset(target_pages[i]), evcand_l2, &((&def_l2_ev_config)->cands_config));
+		single_llc_evset(target_pages[i], EVs_l2[i], &cnt_l2, EVs_td[i], &cnt_td, evb_td, evcand_l2);
+		test_ev_set(target_pages[i], EVs_l2[i], cnt_l2, EVs_td[i], cnt_td);
     }
 
-	page_mul = pages[0];
+	page_mul = target_pages[0];
 	EVl2_mul = EVs_l2[0];
 	EVtd = EVs_td[0];
 
@@ -396,10 +396,10 @@ int main(){
 	//flush_array(EVl2_mul, cnt_l2);
 	//flush_array(EVtd, cnt_td);
 
-	for (int i = 0; i < NUMSTREAMS; i++) {
-		_clflush(pages[i]);
-		flush_array(EVs_l2[i], cnt_l2);
-		flush_array(EVs_td[i], cnt_td);
+	for (int ii = 0; ii < NUMSTREAMS; ii++) {
+		_clflush(target_pages[ii]);
+		flush_array(EVs_l2[ii], cnt_l2);
+		flush_array(EVs_td[ii], cnt_td);
 	}
 	
 	// Test for unique sets
@@ -407,11 +407,11 @@ int main(){
 	for (int ii = 0; ii < NUMSTREAMS; ii++) {
 		for (int jj = 0; jj < NUMSTREAMS; jj++) {
 			printf("Testing : Page %d : EV Set %d\n", ii, jj);
-			int test_ev = test_ev_set(pages[ii], EVs_l2[jj], cnt_l2, EVs_td[jj], cnt_td);
+			int test_ev = test_ev_set(target_pages[ii], EVs_l2[jj], cnt_l2, EVs_td[jj], cnt_td);
 			printf("Result : %d\n", test_ev);
 			if (ii == jj) {
 				if (test_ev != 1) {
-					test_ev = test_ev_set(pages[ii], EVs_l2[jj], cnt_l2, EVs_td[jj], cnt_td);
+					test_ev = test_ev_set(target_pages[ii], EVs_l2[jj], cnt_l2, EVs_td[jj], cnt_td);
 					printf("MISMATCH: Target Page (%d) - EV Set (%d)\n", ii, jj);	
 					grid[ii][jj] = 'X';
 				} else {
@@ -419,7 +419,7 @@ int main(){
 				}
 			} else {
 				if (test_ev == 1) {
-					test_ev = test_ev_set(pages[ii], EVs_l2[jj], cnt_l2, EVs_td[jj], cnt_td);
+					test_ev = test_ev_set(target_pages[ii], EVs_l2[jj], cnt_l2, EVs_td[jj], cnt_td);
 					printf("SET OVERLAP: Target Page (%d) - EV Set (%d)\n", ii, jj);
 					grid[ii][jj] = 'X';
 				} else {
@@ -453,7 +453,7 @@ int main(){
 		pid_t pid = fork();
 		if (pid == 0){
 			// Victim/ sender
-			simple_side_channel_sender(start_tsc, msg_len, page_mul, msg);
+			simple_side_channel_sender(start_tsc, msg_len, target_pages, msg);
 
 		}
 		else if (pid > 0){
@@ -461,7 +461,7 @@ int main(){
 			if (pid2 == 0){
 				// helper 0 
 				printf("Helper 0\n");
-				attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+				attack_helper(start_tsc, msg_len, EVs_td, cnt_td);
 				printf("Helper 0 done\n");
 			}
 			else if (pid2 > 0) {
@@ -469,13 +469,13 @@ int main(){
 				if (pid3 == 0){
 					// helper 1
 					printf("Helper 1\n");
-					attack_helper(start_tsc, msg_len, EVtd, cnt_td);
+					attack_helper(start_tsc, msg_len, EVs_td, cnt_td);
 					printf("Helper 1 done\n");
 				}
 				else if (pid3 > 0){
 					// primary process is attacker
 					printf("Attacker\n");
-					total_mismatch += attacker_side_channel(start_tsc, msg_len, EVl2_mul, cnt_l2, threshold, page_mul);
+					total_mismatch += attacker_side_channel(start_tsc, msg_len, EVs_l2, cnt_l2, threshold, target_pages);
 					wait(NULL); //wait for child process
 				}
 				else{
@@ -500,7 +500,7 @@ int main(){
 	}
 	cleanup:
 		for (int i = 0; i < NUMSTREAMS; i++) {
-			if (munmap(pages[i], TARGET_PAGE_SIZE) == -1) {
+			if (munmap(target_pages[i], TARGET_PAGE_SIZE) == -1) {
 				perror("munmap");
 			}
 		}
@@ -508,7 +508,7 @@ int main(){
 		free(EVs_td);
 		free(EVs_l2);
 
-		free(pages);
+		free(target_pages);
 
 		munmap(page_sqr, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
 		munmap(page_mul, CACHE_PAGE_SIZE * NUM_PAGE_PER_ALLOC);
